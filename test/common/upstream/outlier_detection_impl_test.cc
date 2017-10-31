@@ -117,8 +117,10 @@ TEST_F(OutlierDetectorImplTest, DetectorStaticConfig) {
   EXPECT_EQ(100UL, detector->config().intervalMs());
   EXPECT_EQ(10000UL, detector->config().baseEjectionTimeMs());
   EXPECT_EQ(10UL, detector->config().consecutive5xx());
+  EXPECT_EQ(5UL, detector->config().consecutiveConnectionFailure());
   EXPECT_EQ(50UL, detector->config().maxEjectionPercent());
   EXPECT_EQ(10UL, detector->config().enforcingConsecutive5xx());
+  EXPECT_EQ(100UL, detector->config().enforcingConsecutiveConnectionFailure());
   EXPECT_EQ(20UL, detector->config().enforcingSuccessRate());
   EXPECT_EQ(50UL, detector->config().successRateMinimumHosts());
   EXPECT_EQ(200UL, detector->config().successRateRequestVolume());
@@ -133,7 +135,7 @@ TEST_F(OutlierDetectorImplTest, DestroyWithActive) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
@@ -141,7 +143,7 @@ TEST_F(OutlierDetectorImplTest, DestroyWithActive) {
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
                        EjectionType::Consecutive5xx, true));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
   EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
@@ -161,15 +163,97 @@ TEST_F(OutlierDetectorImplTest, DestroyHostInUse) {
 
   detector.reset();
 
-  loadRq(cluster_.hosts_[0], 5, 503);
+  loadRq(cluster_.hosts_[0], 5, 500);
 }
 
 TEST_F(OutlierDetectorImplTest, BasicFlow5xx) {
+  envoy::api::v2::Cluster::OutlierDetection outlier_detection;
+
   EXPECT_CALL(cluster_, addMemberUpdateCb(_));
   addHosts({"tcp://127.0.0.1:80"});
   EXPECT_CALL(*interval_timer_, enableTimer(std::chrono::milliseconds(10000)));
   std::shared_ptr<DetectorImpl> detector(DetectorImpl::create(
-      cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
+      cluster_, outlier_detection, dispatcher_, runtime_, time_source_, event_logger_));
+  detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
+
+  addHosts({"tcp://127.0.0.1:81"});
+  cluster_.runCallbacks({cluster_.hosts_[1]}, {});
+
+  // Cause a consecutive 5xx error.
+  loadRq(cluster_.hosts_[0], 1, 500);
+  loadRq(cluster_.hosts_[0], 1, 200);
+  cluster_.hosts_[0]->outlierDetector().putResponseTime(std::chrono::milliseconds(5));
+  loadRq(cluster_.hosts_[0], 4, 500);
+
+  EXPECT_CALL(time_source_, currentTime())
+      .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
+  EXPECT_CALL(checker_, check(cluster_.hosts_[0]));
+  EXPECT_CALL(*event_logger_,
+              logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
+                       EjectionType::Consecutive5xx, true));
+  loadRq(cluster_.hosts_[0], 1, 500);
+  EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+
+  EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
+
+  // Interval that doesn't bring the host back in.
+  EXPECT_CALL(time_source_, currentTime())
+      .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(9999))));
+  EXPECT_CALL(*interval_timer_, enableTimer(std::chrono::milliseconds(10000)));
+  interval_timer_->callback_();
+  EXPECT_FALSE(cluster_.hosts_[0]->outlierDetector().lastUnejectionTime().valid());
+
+  // Interval that does bring the host back in.
+  EXPECT_CALL(time_source_, currentTime())
+      .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(30001))));
+  EXPECT_CALL(checker_, check(cluster_.hosts_[0]));
+  EXPECT_CALL(*event_logger_,
+              logUneject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0])));
+  EXPECT_CALL(*interval_timer_, enableTimer(std::chrono::milliseconds(10000)));
+  interval_timer_->callback_();
+  EXPECT_FALSE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+  EXPECT_TRUE(cluster_.hosts_[0]->outlierDetector().lastUnejectionTime().valid());
+
+  // Eject host again to cause an ejection after an unejection has taken place
+  cluster_.hosts_[0]->outlierDetector().putResponseTime(std::chrono::milliseconds(5));
+  loadRq(cluster_.hosts_[0], 4, 500);
+
+  EXPECT_CALL(time_source_, currentTime())
+      .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(40000))));
+  EXPECT_CALL(checker_, check(cluster_.hosts_[0]));
+  EXPECT_CALL(*event_logger_,
+              logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
+                       EjectionType::Consecutive5xx, true));
+  loadRq(cluster_.hosts_[0], 1, 500);
+  EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+  EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
+
+  cluster_.runCallbacks({}, cluster_.hosts_);
+
+  EXPECT_EQ(0UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
+  EXPECT_EQ(2UL, cluster_.info_->stats_store_.counter("outlier_detection.ejections_total").value());
+  EXPECT_EQ(
+      2UL,
+      cluster_.info_->stats_store_.counter("outlier_detection.ejections_consecutive_5xx").value());
+  EXPECT_EQ(
+      0UL,
+      cluster_.info_->stats_store_.counter("outlier_detection.ejections_consecutive_connection_failure").value());
+}
+
+TEST_F(OutlierDetectorImplTest, BasicFlowConnectionFailure) {
+
+  envoy::api::v2::Cluster::OutlierDetection outlier_detection;
+  outlier_detection.mutable_consecutive_5xx()->set_value(1000);
+
+
+  EXPECT_CALL(cluster_, addMemberUpdateCb(_));
+  addHosts({"tcp://127.0.0.1:80"});
+  EXPECT_CALL(*interval_timer_, enableTimer(std::chrono::milliseconds(10000)));
+  std::shared_ptr<DetectorImpl> detector(DetectorImpl::create(
+      cluster_, outlier_detection, dispatcher_, runtime_, time_source_, event_logger_));
+
+  ON_CALL(runtime_.snapshot_, featureEnabled("outlier_detection.enforcing_consecutive_connection_failure", 100))
+      .WillByDefault(Return(true));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
   addHosts({"tcp://127.0.0.1:81"});
@@ -177,7 +261,7 @@ TEST_F(OutlierDetectorImplTest, BasicFlow5xx) {
 
   // Cause a consecutive 5xx error.
   loadRq(cluster_.hosts_[0], 1, 503);
-  loadRq(cluster_.hosts_[0], 1, 200);
+  loadRq(cluster_.hosts_[0], 1, 203);
   cluster_.hosts_[0]->outlierDetector().putResponseTime(std::chrono::milliseconds(5));
   loadRq(cluster_.hosts_[0], 4, 503);
 
@@ -186,7 +270,7 @@ TEST_F(OutlierDetectorImplTest, BasicFlow5xx) {
   EXPECT_CALL(checker_, check(cluster_.hosts_[0]));
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
-                       EjectionType::Consecutive5xx, true));
+                       EjectionType::ConsecutiveConnectionFailure, true));
   loadRq(cluster_.hosts_[0], 1, 503);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
@@ -219,7 +303,7 @@ TEST_F(OutlierDetectorImplTest, BasicFlow5xx) {
   EXPECT_CALL(checker_, check(cluster_.hosts_[0]));
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
-                       EjectionType::Consecutive5xx, true));
+                       EjectionType::ConsecutiveConnectionFailure, true));
   loadRq(cluster_.hosts_[0], 1, 503);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
   EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
@@ -230,6 +314,9 @@ TEST_F(OutlierDetectorImplTest, BasicFlow5xx) {
   EXPECT_EQ(2UL, cluster_.info_->stats_store_.counter("outlier_detection.ejections_total").value());
   EXPECT_EQ(
       2UL,
+      cluster_.info_->stats_store_.counter("outlier_detection.ejections_consecutive_connection_failure").value());
+  EXPECT_EQ(
+      0UL,
       cluster_.info_->stats_store_.counter("outlier_detection.ejections_consecutive_5xx").value());
 }
 
@@ -260,7 +347,7 @@ TEST_F(OutlierDetectorImplTest, BasicFlowSuccessRate) {
 
   // Cause a SR error on one host. First have 4 of the hosts have perfect SR.
   loadRq(cluster_.hosts_, 200, 200);
-  loadRq(cluster_.hosts_[4], 200, 503);
+  loadRq(cluster_.hosts_[4], 200, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .Times(2)
@@ -307,7 +394,7 @@ TEST_F(OutlierDetectorImplTest, BasicFlowSuccessRate) {
 
   // Give 4 hosts enough request volume but not to the 5th. Should not cause an ejection.
   loadRq(cluster_.hosts_, 25, 200);
-  loadRq(cluster_.hosts_[4], 25, 503);
+  loadRq(cluster_.hosts_[4], 25, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(60001))));
@@ -327,7 +414,7 @@ TEST_F(OutlierDetectorImplTest, RemoveWhileEjected) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
@@ -335,7 +422,7 @@ TEST_F(OutlierDetectorImplTest, RemoveWhileEjected) {
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
                        EjectionType::Consecutive5xx, true));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
   EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
@@ -362,7 +449,7 @@ TEST_F(OutlierDetectorImplTest, Overflow) {
   ON_CALL(runtime_.snapshot_, getInteger("outlier_detection.max_ejection_percent", _))
       .WillByDefault(Return(1));
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
@@ -370,10 +457,10 @@ TEST_F(OutlierDetectorImplTest, Overflow) {
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
                        EjectionType::Consecutive5xx, true));
-  cluster_.hosts_[0]->outlierDetector().putHttpResponseCode(503);
+  cluster_.hosts_[0]->outlierDetector().putHttpResponseCode(500);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
-  loadRq(cluster_.hosts_[1], 5, 503);
+  loadRq(cluster_.hosts_[1], 5, 500);
   EXPECT_FALSE(cluster_.hosts_[1]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
   EXPECT_EQ(1UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
@@ -389,14 +476,14 @@ TEST_F(OutlierDetectorImplTest, NotEnforcing) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   ON_CALL(runtime_.snapshot_, featureEnabled("outlier_detection.enforcing_consecutive_5xx", 100))
       .WillByDefault(Return(false));
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
                        EjectionType::Consecutive5xx, false));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
   EXPECT_FALSE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
   EXPECT_EQ(0UL, cluster_.info_->stats_store_.gauge("outlier_detection.ejections_active").value());
@@ -414,11 +501,11 @@ TEST_F(OutlierDetectorImplTest, CrossThreadRemoveRace) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
   EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
 
   // Remove before the cross thread event comes in.
   std::vector<HostSharedPtr> old_hosts = std::move(cluster_.hosts_);
@@ -436,11 +523,11 @@ TEST_F(OutlierDetectorImplTest, CrossThreadDestroyRace) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
   EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
 
   // Destroy before the cross thread event comes in.
   std::weak_ptr<DetectorImpl> weak_detector = detector;
@@ -459,11 +546,11 @@ TEST_F(OutlierDetectorImplTest, CrossThreadFailRace) {
       cluster_, empty_outlier_detection_, dispatcher_, runtime_, time_source_, event_logger_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
   EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
@@ -489,7 +576,7 @@ TEST_F(OutlierDetectorImplTest, Consecutive5xxAlreadyEjected) {
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
 
   // Cause a consecutive 5xx error.
-  loadRq(cluster_.hosts_[0], 4, 503);
+  loadRq(cluster_.hosts_[0], 4, 500);
 
   EXPECT_CALL(time_source_, currentTime())
       .WillOnce(Return(MonotonicTime(std::chrono::milliseconds(0))));
@@ -497,12 +584,12 @@ TEST_F(OutlierDetectorImplTest, Consecutive5xxAlreadyEjected) {
   EXPECT_CALL(*event_logger_,
               logEject(std::static_pointer_cast<const HostDescription>(cluster_.hosts_[0]), _,
                        EjectionType::Consecutive5xx, true));
-  loadRq(cluster_.hosts_[0], 1, 503);
+  loadRq(cluster_.hosts_[0], 1, 500);
   EXPECT_TRUE(cluster_.hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
 
   // Cause another consecutive 5xx error.
   loadRq(cluster_.hosts_[0], 1, 200);
-  loadRq(cluster_.hosts_[0], 5, 503);
+  loadRq(cluster_.hosts_[0], 5, 500);
 }
 
 TEST(DetectorHostMonitorNullImplTest, All) {

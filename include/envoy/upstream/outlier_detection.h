@@ -103,7 +103,7 @@ public:
 
 typedef std::shared_ptr<Detector> DetectorSharedPtr;
 
-enum class EjectionType { Consecutive5xx, SuccessRate };
+enum class EjectionType { Consecutive5xx, SuccessRate, ConsecutiveConnectionFailure };
 
 /**
  * Sink for outlier detection event logs.

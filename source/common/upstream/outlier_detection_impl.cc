@@ -53,6 +53,13 @@ void DetectorHostMonitorImpl::putHttpResponseCode(uint64_t response_code) {
       // It's possible for the cluster/detector to go away while we still have a host in use.
       return;
     }
+    if (Http::CodeUtility::isGatewayError(response_code)) {
+      if (++consecutive_connection_failure_ ==
+          detector->runtime().snapshot().getInteger("outlier_detection.consecutive_connection_failure",
+                                                  detector->config().consecutiveConnectionFailure())) {
+        detector->onConsecutiveConnectionFailure(host_.lock());
+      }
+    }
 
     if (++consecutive_5xx_ ==
         detector->runtime().snapshot().getInteger("outlier_detection.consecutive_5xx",
@@ -62,6 +69,7 @@ void DetectorHostMonitorImpl::putHttpResponseCode(uint64_t response_code) {
   } else {
     success_rate_accumulator_bucket_.load()->success_request_counter_++;
     consecutive_5xx_ = 0;
+    consecutive_connection_failure_ = 0;
   }
 }
 
@@ -71,6 +79,8 @@ DetectorConfig::DetectorConfig(const envoy::api::v2::Cluster::OutlierDetection& 
           static_cast<uint64_t>(PROTOBUF_GET_MS_OR_DEFAULT(config, base_ejection_time, 30000))),
       consecutive_5xx_(
           static_cast<uint64_t>(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, consecutive_5xx, 5))),
+      consecutive_connection_failure_(
+                static_cast<uint64_t>(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, consecutive_connection_failure, 5))),
       max_ejection_percent_(
           static_cast<uint64_t>(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, max_ejection_percent, 10))),
       success_rate_minimum_hosts_(static_cast<uint64_t>(
@@ -81,6 +91,8 @@ DetectorConfig::DetectorConfig(const envoy::api::v2::Cluster::OutlierDetection& 
           PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, success_rate_stdev_factor, 1900))),
       enforcing_consecutive_5xx_(static_cast<uint64_t>(
           PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, enforcing_consecutive_5xx, 100))),
+      enforcing_consecutive_connection_failure_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, enforcing_consecutive_connection_failure, 100))),
       enforcing_success_rate_(static_cast<uint64_t>(
           PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, enforcing_success_rate, 100))) {}
 
@@ -178,6 +190,9 @@ bool DetectorImpl::enforceEjection(EjectionType type) {
   case EjectionType::Consecutive5xx:
     return runtime_.snapshot().featureEnabled("outlier_detection.enforcing_consecutive_5xx",
                                               config_.enforcingConsecutive5xx());
+  case EjectionType::ConsecutiveConnectionFailure:
+      return runtime_.snapshot().featureEnabled("outlier_detection.enforcing_consecutive_connection_failure",
+                                                config_.enforcingConsecutiveConnectionFailure());
   case EjectionType::SuccessRate:
     return runtime_.snapshot().featureEnabled("outlier_detection.enforcing_success_rate",
                                               config_.enforcingSuccessRate());
@@ -217,7 +232,7 @@ DetectionStats DetectorImpl::generateStats(Stats::Scope& scope) {
                                       POOL_GAUGE_PREFIX(scope, prefix))};
 }
 
-void DetectorImpl::onConsecutive5xx(HostSharedPtr host) {
+void DetectorImpl::notifyWorkerConsecutiveError(HostSharedPtr host, std::function<void(std::shared_ptr<DetectorImpl>, HostSharedPtr)> f) {
   // This event will come from all threads, so we synchronize with a post to the main thread.
   // NOTE: Unfortunately consecutive 5xx is complicated from a threading perspective because
   //       we catch consecutive 5xx on worker threads and then post back to the main thread.
@@ -229,22 +244,39 @@ void DetectorImpl::onConsecutive5xx(HostSharedPtr host) {
   //          pointer, the detector/cluster must still exist so we can safely fire callbacks.
   //          Otherwise we do nothing since the detector/cluster is already gone.
   std::weak_ptr<DetectorImpl> weak_this = shared_from_this();
-  dispatcher_.post([weak_this, host]() -> void {
+  dispatcher_.post([weak_this, host, f]() -> void {
     std::shared_ptr<DetectorImpl> shared_this = weak_this.lock();
     if (shared_this) {
-      shared_this->onConsecutive5xxWorker(host);
+      f(shared_this, host);
     }
   });
 }
 
-void DetectorImpl::onConsecutive5xxWorker(HostSharedPtr host) {
+void DetectorImpl::onConsecutive5xx(HostSharedPtr host) {
+    notifyWorkerConsecutiveError(host, [](std::shared_ptr<DetectorImpl> shared_this, HostSharedPtr host) -> void { shared_this->onConsecutive5xxWorker(host); });
+}
+
+void DetectorImpl::onConsecutiveConnectionFailure(HostSharedPtr host) {
+    notifyWorkerConsecutiveError(host, [](std::shared_ptr<DetectorImpl> shared_this, HostSharedPtr host) -> void { shared_this->onConsecutiveConnectionFailureWorker(host); });
+}
+
+bool DetectorImpl::shouldSkipEjection(HostSharedPtr host) {
   // This comes in cross thread. There is a chance that the host has already been removed from
   // the set. If so, just ignore it.
   if (host_monitors_.count(host) == 0) {
-    return;
+    return true;
   }
 
   if (host->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK)) {
+    return true;
+  }
+
+  return false;
+}
+
+void DetectorImpl::onConsecutive5xxWorker(HostSharedPtr host) {
+
+  if (shouldSkipEjection(host)) {
     return;
   }
 
@@ -256,6 +288,22 @@ void DetectorImpl::onConsecutive5xxWorker(HostSharedPtr host) {
   // counter needs to be reset in order to allow the monitor to detect a bout of consecutive
   // 5xx responses even if the monitor is not charged with an interleaved non-5xx code.
   host_monitors_[host]->resetConsecutive5xx();
+}
+
+void DetectorImpl::onConsecutiveConnectionFailureWorker(HostSharedPtr host) {
+
+  if (shouldSkipEjection(host)) {
+    return;
+  }
+
+  stats_.ejections_consecutive_connection_failure_.inc();
+  ejectHost(host, EjectionType::ConsecutiveConnectionFailure);
+
+  // Reset the DetectorHostMonitor's consecutive_5xx_ counter. The reset is performed here
+  // on the onConsecutiveConnectionFailureWorker call to prevent thread thrashing. The consecutive_connection_failure_
+  // counter needs to be reset in order to allow the monitor to detect a bout of consecutive
+  // failures responses even if the monitor is not charged with an interleaved non-failure code.
+  host_monitors_[host]->resetConsecutiveConnectionFailure();
 }
 
 Utility::EjectionPair Utility::successRateEjectionThreshold(
@@ -401,6 +449,7 @@ void EventLoggerImpl::logEject(HostDescriptionConstSharedPtr host, Detector& det
 
   switch (type) {
   case EjectionType::Consecutive5xx:
+  case EjectionType::ConsecutiveConnectionFailure:
     file_->write(fmt::format(
         json_5xx, AccessLogDateTimeFormatter::fromTime(now),
         secsSinceLastAction(host->outlierDetector().lastUnejectionTime(), monotonic_now),
@@ -443,6 +492,8 @@ std::string EventLoggerImpl::typeToString(EjectionType type) {
   switch (type) {
   case EjectionType::Consecutive5xx:
     return "5xx";
+  case EjectionType::ConsecutiveConnectionFailure:
+    return "ConnectionFailure";
   case EjectionType::SuccessRate:
     return "SuccessRate";
   }
