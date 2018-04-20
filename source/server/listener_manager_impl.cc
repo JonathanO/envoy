@@ -10,6 +10,7 @@
 #include "common/network/listen_socket_impl.h"
 #include "common/network/resolver_impl.h"
 #include "common/network/socket_option_impl.h"
+#include "common/network/addr_family_aware_socket_impl.h"
 #include "common/network/utility.h"
 #include "common/protobuf/utility.h"
 
@@ -110,16 +111,6 @@ ProdListenerComponentFactory::createDrainManager(envoy::api::v2::Listener::Drain
   return DrainManagerPtr{new DrainManagerImpl(server_, drain_type)};
 }
 
-// Socket::Option implementation for API-defined listener socket options.
-// This same object can be extended to handle additional listener socket options.
-class ListenerSocketOption : public Network::SocketOptionImpl {
-public:
-  ListenerSocketOption(const envoy::api::v2::Listener& config)
-      : Network::SocketOptionImpl(
-            PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, transparent, absl::optional<bool>{}),
-            PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, freebind, absl::optional<bool>{})) {}
-};
-
 ListenerImpl::ListenerImpl(const envoy::api::v2::Listener& config, ListenerManagerImpl& parent,
                            const std::string& name, bool modifiable, bool workers_started,
                            uint64_t hash)
@@ -141,8 +132,13 @@ ListenerImpl::ListenerImpl(const envoy::api::v2::Listener& config, ListenerManag
   // filter chain #1308.
   ASSERT(config.filter_chains().size() >= 1);
 
-  // Add listen socket options from the config.
-  addListenSocketOption(std::make_shared<ListenerSocketOption>(config));
+  /*if (config.has_transparent()) {
+    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl<int>>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_TRANSPARENT, ENVOY_SOCKET_IPV6_TRANSPARENT, 1));
+  }
+  if (config.has_freebind()) {
+    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl<int>>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
+
+  }*/
 
   if (!config.listener_filters().empty()) {
     listener_filter_factories_ =

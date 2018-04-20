@@ -41,37 +41,53 @@ typedef absl::optional<std::pair<int, int>> SocketOptionName;
 #define ENVOY_SOCKET_IPV6_FREEBIND Network::SocketOptionName()
 #endif
 
+
+#ifdef SO_KEEPALIVE
+#define ENVOY_SOCKET_SO_KEEPALIVE Network::SocketOptionName(std::make_pair(SOL_SOCKET, SO_KEEPALIVE))
+#else
+#define ENVOY_SOCKET_SO_KEEPALIVE Network::SocketOptionName()
+#endif
+
+#ifdef TCP_KEEPCNT
+#define ENVOY_SOCKET_TCP_KEEPCNT Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPCNT))
+#else
+#define ENVOY_SOCKET_TCP_KEEPCNT Network::SocketOptionName()
+#endif
+
+#ifdef TCP_KEEPIDLE
+#define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPIDLE))
+#elif TCP_KEEPALIVE // MacOS uses a different name from Linux for just this option.
+#define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPALIVE))
+#else
+#define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName()
+#endif
+
+#ifdef TCP_KEEPINTVL
+#define ENVOY_SOCKET_TCP_KEEPINTVL Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPINTVL))
+#else
+#define ENVOY_SOCKET_TCP_KEEPINTVL Network::SocketOptionName()
+#endif
+
+
 class SocketOptionImpl : public Socket::Option, Logger::Loggable<Logger::Id::connection> {
 public:
-  SocketOptionImpl(absl::optional<bool> transparent, absl::optional<bool> freebind)
-      : transparent_(transparent), freebind_(freebind) {}
+  SocketOptionImpl(Socket::SocketState in_state, Network::SocketOptionName optname, int value)
+      : in_state_(in_state), optname_(optname), value_(value) {}
 
   // Socket::Option
   bool setOption(Socket& socket, Socket::SocketState state) const override;
+
   // The common socket options don't require a hash key.
   void hashKey(std::vector<uint8_t>&) const override {}
 
-  /**
-   * Set a socket option that applies at both IPv4 and IPv6 socket levels. When the underlying FD
-   * is IPv6, this function will attempt to set at IPv6 unless the platform only supports the
-   * option at the IPv4 level.
-   * @param socket.
-   * @param ipv4_optname SocketOptionName for IPv4 level. Set to empty if not supported on
-   * platform.
-   * @param ipv6_optname SocketOptionName for IPv6 level. Set to empty if not supported on
-   * platform.
-   * @param optval as per setsockopt(2).
-   * @param optlen as per setsockopt(2).
-   * @return int as per setsockopt(2). ENOTSUP is returned if the option is not supported on the
-   * platform for fd after the above option level fallback semantics are taken into account or the
-   *         socket is non-IP.
-   */
-  static int setIpSocketOption(Socket& socket, SocketOptionName ipv4_optname,
-                               SocketOptionName ipv6_optname, const void* optval, socklen_t optlen);
+  bool isSupported() const;
+
+  static int setSocketOption(Socket& socket, Network::SocketOptionName optname, int value);
 
 private:
-  const absl::optional<bool> transparent_;
-  const absl::optional<bool> freebind_;
+  const Socket::SocketState in_state_;
+  const Network::SocketOptionName optname_;
+  const int value_;
 };
 
 } // namespace Network
