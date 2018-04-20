@@ -211,7 +211,6 @@ envoy_cc_library(
         ":address_lib",
         ":socket_option_lib",
         "//include/envoy/network:listen_socket_interface",
-        "//source/common/api:os_sys_calls_lib",
         "//source/common/common:logger_lib",
     ],
 )

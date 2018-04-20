@@ -1,14 +1,21 @@
 #include "common/network/tcp_keepalive_factory.h"
 #include "common/network/socket_option_impl.h"
 
-#include "common/api/os_sys_calls_impl.h"
-#include "common/network/address_impl.h"
-
 namespace Envoy {
 namespace Network {
 
-const Network::ConnectionSocket::OptionsSharedPtr TcpKeepaliveFactory::appendKeepaliveOptions(Network::TcpKeepaliveConfig keepalive_config __attribute__((unused)), Network::ConnectionSocket::OptionsSharedPtr to) {
-  return to;
+void TcpKeepaliveFactory::appendKeepaliveOptions(Network::TcpKeepaliveConfig keepalive_config, Network::ConnectionSocket::OptionsSharedPtr& to) {
+  to->emplace_back(std::make_shared<Network::SocketOptionImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_SO_KEEPALIVE, 1));
+
+  if (keepalive_config.keepalive_probes_.has_value()) {
+    to->emplace_back(std::make_shared<Network::SocketOptionImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_TCP_KEEPCNT, keepalive_config.keepalive_probes_.value()));
+  }
+  if (keepalive_config.keepalive_interval_.has_value()) {
+    to->emplace_back(std::make_shared<Network::SocketOptionImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_TCP_KEEPINTVL, keepalive_config.keepalive_interval_.value()));
+  }
+  if (keepalive_config.keepalive_time_.has_value()) {
+    to->emplace_back(std::make_shared<Network::SocketOptionImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_TCP_KEEPIDLE, keepalive_config.keepalive_time_.value()));
+  }
 }
 
 }

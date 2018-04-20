@@ -16,8 +16,8 @@ namespace Network {
 
 class TcpKeepaliveFactory : Logger::Loggable<Logger::Id::connection> {
  public:
-  static const Network::ConnectionSocket::OptionsSharedPtr appendKeepaliveOptions(Network::TcpKeepaliveConfig keepalive_config,
-                                                                                  Network::ConnectionSocket::OptionsSharedPtr to);
+  static void appendKeepaliveOptions(Network::TcpKeepaliveConfig keepalive_config,
+                                           Network::ConnectionSocket::OptionsSharedPtr& to);
 };
 } // namespace Network
 } // namespace Envoy

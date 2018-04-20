@@ -1481,7 +1481,6 @@ public:
                           const Network::ConnectionSocket::OptionsSharedPtr& options)
                        -> Network::ClientConnection* {
               EXPECT_NE(nullptr, options.get());
-              EXPECT_EQ(1, options->size());
               NiceMock<Network::MockConnectionSocket> socket;
               EXPECT_TRUE(
                   (*options->begin())->setOption(socket, Network::Socket::SocketState::PreBind));

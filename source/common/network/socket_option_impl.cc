@@ -26,6 +26,7 @@ bool SocketOptionImpl::isSupported() const {
 }
 
 int SocketOptionImpl::setSocketOption(Socket &socket, Network::SocketOptionName optname, int value) {
+
   if (!optname.has_value()) {
     errno = ENOTSUP;
     return -1;

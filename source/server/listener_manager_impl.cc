@@ -132,13 +132,12 @@ ListenerImpl::ListenerImpl(const envoy::api::v2::Listener& config, ListenerManag
   // filter chain #1308.
   ASSERT(config.filter_chains().size() >= 1);
 
-  /*if (config.has_transparent()) {
-    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl<int>>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_TRANSPARENT, ENVOY_SOCKET_IPV6_TRANSPARENT, 1));
+  if (config.has_transparent()) {
+    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_TRANSPARENT, ENVOY_SOCKET_IPV6_TRANSPARENT, 1));
   }
   if (config.has_freebind()) {
-    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl<int>>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
-
-  }*/
+    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
+  }
 
   if (!config.listener_filters().empty()) {
     listener_filter_factories_ =

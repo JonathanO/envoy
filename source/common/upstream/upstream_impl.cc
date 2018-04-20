@@ -84,9 +84,7 @@ parseClusterSocketOptions(const envoy::api::v2::Cluster& config,
   // Cluster IP_FREEBIND settings, when set, will override the cluster manager wide settings.
   if ((bind_config.freebind().value() && !config.upstream_bind_config().has_freebind()) ||
       config.upstream_bind_config().freebind().value()) {
- //   cluster_options->emplace_back(std::make_shared<Network::AddrFamilyAwareSocketImpl<int>>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
-       cluster_options->emplace_back(std::make_shared<Network::SocketOptionImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, 1));
-    Network::TcpKeepaliveFactory::appendKeepaliveOptions(parseTcpKeepaliveConfig(config), cluster_options);
+    cluster_options->emplace_back(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
   }
   if (config.upstream_connection_options().has_tcp_keepalive()) {
     Network::TcpKeepaliveFactory::appendKeepaliveOptions(parseTcpKeepaliveConfig(config), cluster_options);
@@ -128,6 +126,7 @@ HostImpl::createConnection(Event::Dispatcher& dispatcher, const ClusterInfo& clu
   } else {
     connection_options = options;
   }
+
   Network::ClientConnectionPtr connection = dispatcher.createClientConnection(
       address, cluster.sourceAddress(), cluster.transportSocketFactory().createTransportSocket(),
       connection_options);
