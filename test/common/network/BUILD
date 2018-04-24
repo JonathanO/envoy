@@ -166,20 +166,6 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
-    name = "tcp_keepalive_factory_test",
-    srcs = ["tcp_keepalive_factory_test.cc"],
-    deps = [
-        "//source/common/network:address_lib",
-        "//source/common/network:socket_option_lib",
-        "//source/common/network:tcp_keepalive_factory_lib",
-        "//test/mocks/api:api_mocks",
-        "//test/mocks/network:network_mocks",
-        "//test/test_common:logging_lib",
-        "//test/test_common:threadsafe_singleton_injector_lib",
-    ],
-)
-
-envoy_cc_test(
     name = "utility_test",
     srcs = ["utility_test.cc"],
     deps = [

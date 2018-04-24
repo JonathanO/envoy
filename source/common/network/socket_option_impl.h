@@ -19,13 +19,15 @@ namespace Network {
 typedef absl::optional<std::pair<int, int>> SocketOptionName;
 
 #ifdef IP_TRANSPARENT
-#define ENVOY_SOCKET_IP_TRANSPARENT Network::SocketOptionName(std::make_pair(IPPROTO_IP, IP_TRANSPARENT))
+#define ENVOY_SOCKET_IP_TRANSPARENT                                                                \
+  Network::SocketOptionName(std::make_pair(IPPROTO_IP, IP_TRANSPARENT))
 #else
 #define ENVOY_SOCKET_IP_TRANSPARENT Network::SocketOptionName()
 #endif
 
 #ifdef IPV6_TRANSPARENT
-#define ENVOY_SOCKET_IPV6_TRANSPARENT Network::SocketOptionName(std::make_pair(IPPROTO_IPV6, IPV6_TRANSPARENT))
+#define ENVOY_SOCKET_IPV6_TRANSPARENT                                                              \
+  Network::SocketOptionName(std::make_pair(IPPROTO_IPV6, IPV6_TRANSPARENT))
 #else
 #define ENVOY_SOCKET_IPV6_TRANSPARENT Network::SocketOptionName()
 #endif
@@ -37,14 +39,15 @@ typedef absl::optional<std::pair<int, int>> SocketOptionName;
 #endif
 
 #ifdef IPV6_FREEBIND
-#define ENVOY_SOCKET_IPV6_FREEBIND Network::SocketOptionName(std::make_pair(IPPROTO_IPV6, IPV6_FREEBIND))
+#define ENVOY_SOCKET_IPV6_FREEBIND                                                                 \
+  Network::SocketOptionName(std::make_pair(IPPROTO_IPV6, IPV6_FREEBIND))
 #else
 #define ENVOY_SOCKET_IPV6_FREEBIND Network::SocketOptionName()
 #endif
 
-
 #ifdef SO_KEEPALIVE
-#define ENVOY_SOCKET_SO_KEEPALIVE Network::SocketOptionName(std::make_pair(SOL_SOCKET, SO_KEEPALIVE))
+#define ENVOY_SOCKET_SO_KEEPALIVE                                                                  \
+  Network::SocketOptionName(std::make_pair(SOL_SOCKET, SO_KEEPALIVE))
 #else
 #define ENVOY_SOCKET_SO_KEEPALIVE Network::SocketOptionName()
 #endif
@@ -56,19 +59,21 @@ typedef absl::optional<std::pair<int, int>> SocketOptionName;
 #endif
 
 #ifdef TCP_KEEPIDLE
-#define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPIDLE))
+#define ENVOY_SOCKET_TCP_KEEPIDLE                                                                  \
+  Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPIDLE))
 #elif TCP_KEEPALIVE // MacOS uses a different name from Linux for just this option.
-#define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPALIVE))
+#define ENVOY_SOCKET_TCP_KEEPIDLE                                                                  \
+  Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPALIVE))
 #else
 #define ENVOY_SOCKET_TCP_KEEPIDLE Network::SocketOptionName()
 #endif
 
 #ifdef TCP_KEEPINTVL
-#define ENVOY_SOCKET_TCP_KEEPINTVL Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPINTVL))
+#define ENVOY_SOCKET_TCP_KEEPINTVL                                                                 \
+  Network::SocketOptionName(std::make_pair(IPPROTO_TCP, TCP_KEEPINTVL))
 #else
 #define ENVOY_SOCKET_TCP_KEEPINTVL Network::SocketOptionName()
 #endif
-
 
 class SocketOptionImpl : public Socket::Option, Logger::Loggable<Logger::Id::connection> {
 public:
@@ -89,6 +94,30 @@ private:
   const Socket::SocketState in_state_;
   const Network::SocketOptionName optname_;
   const int value_;
+};
+
+class SocketOptionsImpl : public Socket::Option, Logger::Loggable<Logger::Id::connection> {
+public:
+  SocketOptionsImpl() {}
+
+  void addOption(std::unique_ptr<Socket::Option> option) { options_.push_back(std::move(option)); }
+
+  // Socket::Option
+  bool setOption(Socket& socket, Socket::SocketState state) const override {
+    bool good = true;
+    for (const auto& option : options_) {
+      if (!option->setOption(socket, state)) {
+        good = false;
+      }
+    }
+    return good;
+  }
+
+  // The common socket options don't require a hash key.
+  void hashKey(std::vector<uint8_t>&) const override {}
+
+private:
+  std::vector<std::unique_ptr<const Socket::Option>> options_;
 };
 
 } // namespace Network

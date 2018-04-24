@@ -24,9 +24,7 @@
 #include "common/http/utility.h"
 #include "common/network/address_impl.h"
 #include "common/network/resolver_impl.h"
-#include "common/network/socket_option_impl.h"
-#include "common/network/tcp_keepalive_factory.h"
-#include "common/network/addr_family_aware_socket_impl.h"
+#include "common/network/socket_option_factory.h"
 #include "common/protobuf/protobuf.h"
 #include "common/protobuf/utility.h"
 #include "common/upstream/eds.h"
@@ -84,10 +82,11 @@ parseClusterSocketOptions(const envoy::api::v2::Cluster& config,
   // Cluster IP_FREEBIND settings, when set, will override the cluster manager wide settings.
   if ((bind_config.freebind().value() && !config.upstream_bind_config().has_freebind()) ||
       config.upstream_bind_config().freebind().value()) {
-    cluster_options->emplace_back(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
+    cluster_options->emplace_back(Network::SocketOptionFactory::buildIpFreebindOptions());
   }
   if (config.upstream_connection_options().has_tcp_keepalive()) {
-    Network::TcpKeepaliveFactory::appendKeepaliveOptions(parseTcpKeepaliveConfig(config), cluster_options);
+    cluster_options->emplace_back(
+        Network::SocketOptionFactory::buildTcpKeepaliveOptions(parseTcpKeepaliveConfig(config)));
   }
   if (cluster_options->empty()) {
     return nullptr;

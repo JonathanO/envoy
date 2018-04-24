@@ -9,8 +9,7 @@
 #include "common/config/utility.h"
 #include "common/network/listen_socket_impl.h"
 #include "common/network/resolver_impl.h"
-#include "common/network/socket_option_impl.h"
-#include "common/network/addr_family_aware_socket_impl.h"
+#include "common/network/socket_option_factory.h"
 #include "common/network/utility.h"
 #include "common/protobuf/utility.h"
 
@@ -133,10 +132,10 @@ ListenerImpl::ListenerImpl(const envoy::api::v2::Listener& config, ListenerManag
   ASSERT(config.filter_chains().size() >= 1);
 
   if (config.has_transparent()) {
-    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_TRANSPARENT, ENVOY_SOCKET_IPV6_TRANSPARENT, 1));
+    addListenSocketOption(Network::SocketOptionFactory::buildIpTransparentOptions());
   }
   if (config.has_freebind()) {
-    addListenSocketOption(std::make_shared<Network::AddrFamilyAwareSocketImpl>(Network::Socket::SocketState::PreBind, ENVOY_SOCKET_IP_FREEBIND, ENVOY_SOCKET_IPV6_FREEBIND, 1));
+    addListenSocketOption(Network::SocketOptionFactory::buildIpFreebindOptions());
   }
 
   if (!config.listener_filters().empty()) {

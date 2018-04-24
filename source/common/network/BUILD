@@ -203,11 +203,12 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
-    name = "tcp_keepalive_factory_lib",
-    srcs = ["tcp_keepalive_factory.cc"],
-    hdrs = ["tcp_keepalive_factory.h"],
+    name = "socket_option_factory_lib",
+    srcs = ["socket_option_factory.cc"],
+    hdrs = ["socket_option_factory.h"],
     external_deps = ["abseil_optional"],
     deps = [
+        ":addr_family_aware_socket_lib",
         ":address_lib",
         ":socket_option_lib",
         "//include/envoy/network:listen_socket_interface",
